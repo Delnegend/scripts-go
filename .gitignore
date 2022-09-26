@@ -1,0 +1,4 @@
+*.exe
+./demo
+./sample
+./.vscode
