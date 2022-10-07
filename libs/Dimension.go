@@ -11,6 +11,7 @@ import (
 	"strings"
 )
 
+// Getting dimensions of a media file, returns width, height | 0, 0 if error
 func Dimension(path string) (int, int) {
 	if InArr(strings.ToLower(filepath.Ext(path)), []string{".jpg", ".jpeg", ".png", ".gif"}) != "" {
 		file, err := os.Open(path)

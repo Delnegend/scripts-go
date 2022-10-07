@@ -11,42 +11,43 @@ import (
 )
 
 var (
-	input           *string
-	force_srgan     *bool
-	source_format   *string
-	no_archive      *bool
-	target_size     *string
-	format          *string
-	single          *bool
-	model           *string
-	upscale_threads *string
+	input          *string
+	force_srgan    *bool
+	source_format  *string
+	target_size    *string
+	format         *string
+	single         *bool
+	model          *string
+	resize_threads *string
 )
 
 func init() {
 	input = flag.String("i", ".", "Input folder")
-	source_format = flag.String("sf", "jxl", "Source format is 'jxl/webp' or 'png/jpg'")
-	no_archive = flag.Bool("no_archive", false, "Only process files, not archive")
-	format = flag.String("format", "webp", "Format of processed files: 'avif', 'webp'")
+	source_format = flag.String("sf", "png", "Source format: 'jxl', 'webp' or 'png' (default, jpg = png)")
+	format = flag.String("tf", "webp", "Format of processed files: 'avif', 'webp'")
 	target_size = flag.String("max", "w2000", "Max size of image in pixel, 0 to disable")
-	force_srgan = flag.Bool("srgan", false, "Force resize using RealESRGAN even if image has dimension larger than max")
+	force_srgan = flag.Bool("force", false, "Force resize using RealESRGAN even if image has dimension larger than max")
 	single = flag.Bool("single", false, "Treat the input folder as a single pack")
 	model = flag.String("model", "realesr-animevideov3", "Model for RealESRGAN")
-	upscale_threads = flag.String("t", "4", "Number of threads for BatchResize")
+	resize_threads = flag.String("t", "4", "Number of threads for BatchResize")
 	flag.Parse()
+
+	os.Stdout.Write([]byte("\033[H\033[2J")) // clear the console
+
 	if *source_format != "jxl" && *source_format != "webp" && *source_format != "png" {
+		libs.PrintErr(os.Stderr, "Source format must be 'jxl', 'webp' or 'png'\n")
 		*source_format = "png"
 	}
 	*input = filepath.Clean(*input)
 }
 
-func stage_upscale(pack_folder string) string {
+func stage_resize(pack_folder string) string {
 	var resize_cmd *exec.Cmd
-	upscaled_folder := pack_folder + "_upscaled"
-	if os.Mkdir(upscaled_folder, os.ModePerm) != nil {
-		fmt.Println("Error creating folder", upscaled_folder)
-		os.Exit(1)
+	resized_folder := pack_folder + "_resized"
+	if _, err := os.Stat(resized_folder); os.IsNotExist(err) {
+		os.Mkdir(resized_folder, os.ModePerm)
 	}
-	input_cmd := []string{"-i", pack_folder, "-o", upscaled_folder, "-t", *upscale_threads ,"-target_size", *target_size, "-err_only", "-model", *model}
+	input_cmd := []string{"-i", pack_folder, "-o", resized_folder, "-t", *resize_threads, "-target_size", *target_size, "-err_only", "-model", *model}
 	if *force_srgan {
 		input_cmd = append(input_cmd, "-srgan")
 	}
@@ -56,21 +57,31 @@ func stage_upscale(pack_folder string) string {
 	if err := resize_cmd.Run(); err != nil {
 		fmt.Println(err)
 	}
-	return upscaled_folder
+	return resized_folder
 }
 
-func stage_upscale_ani(pack_folder string, upscaled_folder string, formats []string) string {
+func stage_resize_ani(pack_folder string, resized_folder string, formats []string) string {
 	for _, file := range libs.ListFiles(pack_folder, formats, true, false) {
-		output_file := libs.ReplaceIO(file[:len(file)-len(filepath.Ext(file))], pack_folder, upscaled_folder) + ".webp"
-		upscale_cmd := exec.Command("UpscaleAni", "-i", file, "-o", output_file, "-target_size", "h720")
-		upscale_cmd.Stdout = os.Stdout
-		upscale_cmd.Stderr = os.Stderr
+		output_file := libs.ReplaceIO(file[:len(file)-len(filepath.Ext(file))], pack_folder, resized_folder) + ".webp"
+		resize_param := []string{"-i", file, "-o", output_file, "-cleanup"}
+		w, h := libs.Dimension(file)
+		if w < h {
+			resize_param = append(resize_param, "-max", "w900")
+		} else {
+			resize_param = append(resize_param, "-max", "h900")
+		}
+		if *force_srgan {
+			resize_param = append(resize_param, "-force")
+		}
+		resize_cmd := exec.Command("UpscaleAni", resize_param...)
+		resize_cmd.Stdout = os.Stdout
+		resize_cmd.Stderr = os.Stderr
 		fmt.Println("==>", file)
-		if err := upscale_cmd.Run(); err != nil {
-			libs.PrintErr(os.Stderr, "==> Error: %s\n", file)
+		if err := resize_cmd.Run(); err != nil {
+			libs.PrintErr(os.Stderr, "==> Error: %s\n", err)
 		}
 	}
-	return upscaled_folder
+	return resized_folder
 }
 
 func stage_transcode(input_folder, output_folder, format string) {
@@ -97,47 +108,55 @@ func stage_compress(pack string, name string, compress_type string, included []s
 func process(pack string) {
 	libs.PrintSign(pack, "main")
 
-	color.Greenf("\nStage 0: Decode JXL to PNG\n")
+	// ====== Stage 1: Transcode to/from JXL ======
+
 	if *source_format == "jxl" {
+		color.Greenf("\nStage 1: Decode JXL to PNG\n")
 		stage_transcode(pack, pack, "djxl")
-	} else {
-		fmt.Println("Skipped")
-	}
-	color.Greenf("\nStage 1: Encode to JXL\n")
-	if *source_format == "jxl" || *source_format == "webp" {
-		fmt.Println("Skipped")
-	} else {
+	} else if *source_format == "png" {
+		color.Greenf("\nStage 1: Encode to JXL\n")
 		stage_transcode(pack, pack, "cjxl")
+	} else {
+		color.Greenf("\nStage 1: Source file lossly webp, converting to JXL brings no size benefit.\n")
+		stage_transcode(pack, pack, "dwebp")
 	}
 
-	color.Greenf("\nStage 2: Upscaling images\n")
-	upscale_folder := stage_upscale(pack)
+	// ====== Stage 2: Resize ======
 
-	color.Greenf("\nStage 3: Upscaling animations\n")
-	transcoded_folder := pack + "_transcoded" // animations get upscale and encode directly into webp without going through a transcode step so we can just throw the output file into the transcoded folder
-	stage_upscale_ani(pack, transcoded_folder, []string{".mp4", ".mkv", ".webm", ".gif"})
+	color.Greenf("\nStage 2: Resizing images\n")
+	resize_folder := stage_resize(pack)
 
-	color.Greenf("\nStage 4: Transcode\n")
+	color.Greenf("\nStage 2.5: Resizing animations\n")
+	transcoded_folder := pack + "_transcoded" // animations get resize and encode directly into webp without going through a transcode step so we can just throw the output file into the transcoded folder
+	if _, err := os.Stat(transcoded_folder); os.IsNotExist(err) {
+		os.Mkdir(transcoded_folder, os.ModePerm)
+	}
+	stage_resize_ani(pack, transcoded_folder, []string{".mp4", ".mkv", ".webm", ".gif"})
+
+	// ====== Stage 3: Transcode ======
+
+	color.Greenf("\nStage 3: Transcode\n")
 	switch *format {
 	case "webp":
-		stage_transcode(upscale_folder, transcoded_folder, "cwebp")
+		stage_transcode(resize_folder, transcoded_folder, "cwebp")
 	case "avif":
-		stage_transcode(upscale_folder, transcoded_folder, "avif")
+		stage_transcode(resize_folder, transcoded_folder, "avif")
 	}
 
-	color.Greenf("\nStage 5: Compress\n")
-	if *no_archive || *single {
-		fmt.Println("Skipped")
-	} else {
+	// ====== Stage 4: Compress ======
+
+	if !*single {
+		color.Greenf("\nStage 4: Compress\n")
 		if *source_format != "jxl" {
 			stage_compress(pack, pack, "7z", []string{"*.mp4", "*.webp", "*.gif", "*.jxl"})
 		}
 		stage_compress(transcoded_folder, pack, "zip", []string{"*.avif", "*.webp"})
 	}
 
-	color.Greenf("\nStage 6: Cleanup\n")
-	if *no_archive || *single {
-		fmt.Println("Skipped")
+	// ====== Stage 5: Cleanup ======
+
+	if !*single || *source_format != "jxl" {
+		color.Greenf("\nStage 5: Cleanup\n")
 		if *source_format != "jxl" {
 			jxl_folder := pack + "_jxl"
 			os.Mkdir(jxl_folder, os.ModePerm)
@@ -145,10 +164,9 @@ func process(pack string) {
 				os.Rename(file, libs.ReplaceIO(file, pack, jxl_folder))
 			}
 		}
-	} else {
 		os.RemoveAll(transcoded_folder)
 	}
-	os.RemoveAll(upscale_folder)
+	os.RemoveAll(resize_folder)
 }
 
 func main() {
@@ -157,16 +175,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	os.Stdout.Write([]byte("\033[H\033[2J")) // clear the console
-	fmt.Printf("Source format: %s | Create archive: %t | Target format: %s\n", *source_format, !*no_archive, *format)
+	fmt.Printf("Source format: %s | Single mode: %t | Target format: %s\n", *source_format, *single, *format)
 
-	if !*single {
+	if *single {
+		process(*input)
+	} else {
 		os.Chdir(*input)
 		for _, pack := range libs.ListFolders(".", false) {
 			process(pack)
 		}
-	} else {
-		process(*input)
 	}
+
 	exec.Command("wscript", "D:\\sound.vbs").Run()
 }

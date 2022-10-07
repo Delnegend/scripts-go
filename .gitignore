@@ -1,4 +1,4 @@
 *.exe
 ./demo
 ./sample
-./.vscode
+*.gif
