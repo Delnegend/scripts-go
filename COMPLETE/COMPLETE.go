@@ -28,9 +28,13 @@ func init() {
 	target_size = flag.String("max", "w2000", "Max size of image in pixel, 0 to disable")
 	force_srgan = flag.Bool("force", false, "Force resize using RealESRGAN even if image has dimension larger than max")
 	single = flag.Bool("single", false, "Treat the input folder as a single pack")
-	model = flag.String("model", "realesr-animevideov3", "Model for RealESRGAN")
+	model = flag.String("model", "fast", "Model for RealESRGAN: 'fast' or 'details'")
 	resize_threads = flag.String("t", "4", "Number of threads for BatchResize")
 	flag.Parse()
+
+	if (*input)[len(*input)-1:] == "\"" {
+		*input = (*input)[:len(*input)-1]
+	}
 
 	os.Stdout.Write([]byte("\033[H\033[2J")) // clear the console
 
@@ -39,6 +43,14 @@ func init() {
 		*source_format = "png"
 	}
 	*input = filepath.Clean(*input)
+	if *model != "fast" && *model != "details" {
+		libs.PrintErr(os.Stderr, "Model must be 'fast' or 'details'\n")
+		os.Exit(1)
+	} else if *model == "fast" {
+		*model = "realesr-animevideov3"
+	} else {
+		*model = "realesrgan-x4plus-anime"
+	}
 }
 
 func stage_resize(pack_folder string) string {
@@ -65,7 +77,7 @@ func stage_resize_ani(pack_folder string, resized_folder string, formats []strin
 		output_file := libs.ReplaceIO(file[:len(file)-len(filepath.Ext(file))], pack_folder, resized_folder) + ".webp"
 		resize_param := []string{"-i", file, "-o", output_file, "-cleanup"}
 		w, h := libs.Dimension(file)
-		if w < h {
+		if w > h {
 			resize_param = append(resize_param, "-max", "w900")
 		} else {
 			resize_param = append(resize_param, "-max", "h900")
@@ -155,8 +167,9 @@ func process(pack string) {
 
 	// ====== Stage 5: Cleanup ======
 
-	if !*single || *source_format != "jxl" {
-		color.Greenf("\nStage 5: Cleanup\n")
+	if *single {
+		color.Greenf("\nStage 5: Re-organizing files\n")
+		// Create a jxl folder for the transcoded jxl files
 		if *source_format != "jxl" {
 			jxl_folder := pack + "_jxl"
 			os.Mkdir(jxl_folder, os.ModePerm)
@@ -164,6 +177,8 @@ func process(pack string) {
 				os.Rename(file, libs.ReplaceIO(file, pack, jxl_folder))
 			}
 		}
+	} else {
+		color.Greenf("\nStage 5: Cleanup\n")
 		os.RemoveAll(transcoded_folder)
 	}
 	os.RemoveAll(resize_folder)
@@ -175,7 +190,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Source format: %s | Single mode: %t | Target format: %s\n", *source_format, *single, *format)
+	fmt.Printf("Source format: %s | Single mode: %t | Target format: %s | Model: %s\n", *source_format, *single, *format, *model)
 
 	if *single {
 		process(*input)

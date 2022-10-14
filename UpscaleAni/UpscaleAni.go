@@ -108,23 +108,38 @@ func upscale(input string, output string, width int, height int, side string, ma
 }
 
 func ffmpeg_encode(input, output, framerate, side, max string) error {
-	ffmpeg_resize := fmt.Sprintf(`scale='-1:min(%s,ih)'`, max)
-	if side == "w" {
-		ffmpeg_resize = fmt.Sprintf(`scale='min(%s,iw)':-1`, max)
-	}
+
 	var merge_params []string
-	if framerate == "0" {
-		merge_params = []string{"ffmpeg", "-i", input, "-vf", ffmpeg_resize}
+	var ffmpeg_vf string
+
+	if filepath.Ext(output) == ".webp" {
+		scale := fmt.Sprintf("scale=-1:%s", max)
+		if side == "w" {
+			scale = fmt.Sprintf("scale=%s:-1", max)
+		}
+		ffmpeg_vf = fmt.Sprintf("fps=24,%s", scale)
 	} else {
-		merge_params = []string{"ffmpeg", "-i", input, "-r", framerate, "-vf", ffmpeg_resize}
+		ffmpeg_vf = fmt.Sprintf(`scale=-1:%s`, max)
+		if side == "w" {
+			ffmpeg_vf = fmt.Sprintf(`scale=%s:-1`, max)
+		}
 	}
+
+	if framerate == "0" {
+		merge_params = []string{"ffmpeg", "-i", input, "-vf", ffmpeg_vf}
+	} else {
+		merge_params = []string{"ffmpeg", "-i", input, "-r", framerate, "-vf", ffmpeg_vf}
+	}
+
 	switch filepath.Ext(output) {
 	case ".gif":
 		merge_params = append(merge_params, "-loop", "0", output)
 	case ".webp":
-		merge_params = append(merge_params, "-loop", "0", "-compression_level", "6", "-quality", "80", output)
+		merge_params = append(merge_params, "-c:v", "libwebp", "-loop", "0", "-compression_level", "6", "-quality", "80", "-an", output)
 	case ".mov":
 		merge_params = append(merge_params, "-c:v", "prores_ks", "-profile:v", "4", output)
+	case ".avif":
+		merge_params = append(merge_params, "-c:v", "libaom-av1", "-crf", "26", "-cpu-used", "6", "-aq-mode", "1", "-tune", "psnr", "-aom-params", "enable-chroma-deltaq=1", output)
 	default:
 		merge_params = append(merge_params, "-f", "image2", "-codec", "copy", output)
 	}
@@ -147,15 +162,27 @@ func main() {
 		libs.PrintErr(os.Stderr, "%s is not a valid video\n", *input)
 		os.Exit(1)
 	}
-	if !(side_to_resize == "h" && (max_output_size <= h)) || (side_to_resize == "w" && (max_output_size <= w)) || *force {
-		// Upscale function
+
+	// Check if output file already exists
+	if _, err := os.Stat(*output); !os.IsNotExist(err) {
+		libs.PrintErr(os.Stderr, "%s already exists, overwrite? (y/n): ", *output)
+		var answer string
+		fmt.Scanln(&answer)
+		if answer != "y" {
+			os.Exit(0)
+		}
+		os.Remove(*output)
+	}
+
+	if (side_to_resize == "h" && (max_output_size >= h)) || (side_to_resize == "w" && (max_output_size >= w)) || *force {
+		// Upscale
 		fmt.Println("Upscaling...")
 		if err := upscale(*input, *output, w, h, side_to_resize, max_output_size); err != nil {
 			libs.PrintErr(os.Stderr, "Error:%s\n", err)
 			os.Exit(1)
 		}
 	} else {
-		// Downscale function
+		// Downscale
 		fmt.Println("Downscaling...")
 		if err := ffmpeg_encode(*input, *output, "0", side_to_resize, fmt.Sprintf("%d", max_output_size)); err != nil {
 			libs.PrintErr(os.Stderr, "Error:%s\n", err)
