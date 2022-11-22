@@ -4,8 +4,7 @@ use (
 	./BatchCompress
 	./BatchConvert
 	./BatchResize
-	./COMPLETE
-	./SortingMusic
 	./UpscaleAni
 	./libs
+	./COMPLETE
 )
